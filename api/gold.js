@@ -1,121 +1,56 @@
-// /api/gold.js  (Node serverless on Vercel — CommonJS)
-
-const G_PER_TROY_OUNCE = 31.1034768;
-
-const KARATS = {
-  k24: 24 / 24,
-  k22: 22 / 24,
-  k21: 21 / 24,
-  k18: 18 / 24,
+// /api/gold.js
+export const config = {
+  runtime: "edge",
 };
 
-// Small utility: fetch with timeout + retries
-async function fetchJSON(url, { timeoutMs = 6000, retries = 2, headers = {} } = {}) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
+export default async function handler(req) {
+  try {
+    // Fetch gold price in USD per ounce
+    const metalRes = await fetch("https://api.metals.live/v1/spot");
+    const metalData = await metalRes.json();
+    const goldUSD = metalData?.[0]?.gold;
+    if (!goldUSD) throw new Error("Gold price unavailable");
 
+    // Fetch USD→KWD exchange rate (fallback-safe)
+    let usdToKwd;
     try {
-      const res = await fetch(url, {
-        headers: {
-          "user-agent": "albather-gold/1.0 (+vercel)",
-          "accept": "application/json, */*",
-          ...headers,
-        },
-        redirect: "follow",
-        signal: controller.signal,
-      });
-
-      clearTimeout(id);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      try {
-        return JSON.parse(text);
-      } catch {
-        // some endpoints (metals.live) return arrays or numbers; try to eval safely
-        return JSON.parse(text); // will throw again if truly not JSON
-      }
-    } catch (err) {
-      clearTimeout(id);
-      if (attempt === retries) throw err;
-      // brief backoff
-      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+      const fxRes = await fetch("https://open.er-api.com/v6/latest/USD");
+      const fxData = await fxRes.json();
+      usdToKwd = fxData?.rates?.KWD;
+      if (!usdToKwd || typeof usdToKwd !== "number") throw new Error("Bad rate");
+    } catch (e) {
+      // fallback fixed rate in case the API is offline
+      usdToKwd = 0.308; // approximate USD→KWD
     }
-  }
-}
 
-// Parse spot gold (USD/oz) from different providers
-async function getGoldUsdPerOunce() {
-  // 1) metals.live (no key)
-  try {
-    // returns an array like: [ [timestamp, price], ... ] or [price1, price2, ...]
-    const data = await fetchJSON("https://api.metals.live/v1/spot/gold");
-    let price;
-
-    if (Array.isArray(data)) {
-      const last = data[data.length - 1];
-      if (Array.isArray(last)) price = Number(last[1]);
-      else price = Number(last);
-    }
-    if (!isFinite(price)) throw new Error("bad metals.live format");
-    return { usdPerOunce: price, source: "metals.live" };
-  } catch (_) { /* fall through */ }
-
-  // 2) metals.dev (needs key, optional)
-  try {
-    const key = process.env.METALS_DEV_KEY; // optional
-    if (key) {
-      const d = await fetchJSON(
-        `https://api.metals.dev/v1/latest?api_key=${encodeURIComponent(key)}&symbols=XAU&currencies=USD`
-      );
-      // expecting d.metals.XAU.price
-      const price = Number(d?.metals?.XAU?.price);
-      if (!isFinite(price)) throw new Error("bad metals.dev format");
-      return { usdPerOunce: price, source: "metals.dev" };
-    }
-  } catch (_) { /* fall through */ }
-
-  throw new Error("no spot source available");
-}
-
-async function getUsdToKwd() {
-  const fx = await fetchJSON("https://api.exchangerate.host/latest?base=USD&symbols=KWD");
-  const rate = Number(fx?.rates?.KWD);
-  if (!isFinite(rate) || rate <= 0) throw new Error("bad USD→KWD rate");
-  return rate;
-}
-
-function toFixed3(n) {
-  return Number(n).toFixed(3);
-}
-
-module.exports = async (req, res) => {
-  try {
-    const [{ usdPerOunce, source }, usdToKwd] = await Promise.all([
-      getGoldUsdPerOunce(),
-      getUsdToKwd(),
-    ]);
-
-    const usdPerGram = usdPerOunce / G_PER_TROY_OUNCE;
-    const kwdPerGram24 = usdPerGram * usdToKwd;
-
+    // Convert ounce → gram (1 troy oz = 31.1034768 g)
+    const kwdPerGram24 = (goldUSD * usdToKwd) / 31.1034768;
     const prices = {
-      k24: Number(toFixed3(kwdPerGram24 * KARATS.k24)),
-      k22: Number(toFixed3(kwdPerGram24 * KARATS.k22)),
-      k21: Number(toFixed3(kwdPerGram24 * KARATS.k21)),
-      k18: Number(toFixed3(kwdPerGram24 * KARATS.k18)),
+      k24: kwdPerGram24.toFixed(3),
+      k22: (kwdPerGram24 * 22 / 24).toFixed(3),
+      k21: (kwdPerGram24 * 21 / 24).toFixed(3),
+      k18: (kwdPerGram24 * 18 / 24).toFixed(3)
     };
 
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.setHeader("cache-control", "no-store");
-    res.status(200).send(JSON.stringify({
+    return new Response(JSON.stringify({
       prices,
-      source: `${source} × exchangerate.host`,
       updated: new Date().toISOString(),
-    }));
+      source: "metals.live × open.er-api.com"
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=15"
+      }
+    });
+
   } catch (err) {
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.status(500).send(JSON.stringify({ error: "fetch failed", detail: String(err && err.message || err) }));
+    return new Response(JSON.stringify({
+      error: err.message,
+      detail: "fetch failed"
+    }), {
+      status: 500,
+      headers: { "content-type": "application/json" }
+    });
   }
-};
+}
