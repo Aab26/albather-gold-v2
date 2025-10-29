@@ -1,115 +1,161 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Albather Jewelry — Live Gold Price Board</title>
   <style>
     body {
       background-color: #000;
-      color: #d4af37;
-      font-family: Arial, sans-serif;
+      color: gold;
+      font-family: 'Poppins', sans-serif;
       text-align: center;
       margin: 0;
       padding: 0;
     }
-    .logo {
-      margin-top: 30px;
+
+    /* Header and glowing logo */
+    .header {
+      text-align: center;
+      margin-top: 40px;
+      margin-bottom: 20px;
     }
-    .logo img {
-      width: 120px;
-      height: auto;
+
+    .logo-glow {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0 auto 10px;
+      width: 140px;
+      height: 140px;
       border-radius: 50%;
-      box-shadow: 0 0 20px 5px #d4af37aa;
+      background: radial-gradient(circle, rgba(255,215,0,0.25), transparent 70%);
+      box-shadow: 0 0 40px rgba(255,215,0,0.3), 0 0 80px rgba(255,215,0,0.2);
+      animation: glowPulse 4s infinite ease-in-out;
     }
+
+    .logo {
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+
+    @keyframes glowPulse {
+      0%, 100% {
+        box-shadow: 0 0 40px rgba(255,215,0,0.3), 0 0 80px rgba(255,215,0,0.2);
+      }
+      50% {
+        box-shadow: 0 0 60px rgba(255,215,0,0.6), 0 0 100px rgba(255,215,0,0.4);
+      }
+    }
+
     h1 {
-      margin-top: 10px;
-      font-size: 1.5em;
+      font-size: 1.4rem;
+      margin: 10px 0 5px;
+      color: gold;
+    }
+
+    p {
+      font-size: 0.9rem;
       color: #d4af37;
     }
-    .price-grid {
+
+    /* Price grid */
+    .prices {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, 140px);
       gap: 15px;
-      width: 300px;
-      margin: 40px auto;
+      justify-content: center;
+      margin-top: 25px;
     }
-    .price-box {
-      border: 1px solid #d4af37;
+
+    .card {
+      border: 1px solid gold;
       border-radius: 10px;
-      padding: 20px;
-      font-size: 1.2em;
-      transition: box-shadow 0.3s ease;
+      padding: 20px 10px;
+      font-size: 1.1rem;
+      transition: all 0.4s ease;
     }
+
     .flash {
-      box-shadow: 0 0 25px 5px #d4af37;
+      background-color: rgba(255,215,0,0.2);
+      box-shadow: 0 0 20px gold;
     }
-    .countdown {
+
+    #countdown {
       margin-top: 15px;
-      font-size: 0.9em;
       color: #888;
     }
+
     footer {
       margin-top: 30px;
-      font-size: 0.8em;
+      font-size: 0.8rem;
       color: #777;
     }
   </style>
 </head>
 <body>
-  <div class="logo">
-    <img src="logo.jpg" alt="Albather Jewelry Logo" />
-  </div>
-  <h1>Albather Jewelry — Live Gold Price Board</h1>
-  <p>Prices in KWD per gram • Auto-refresh every 15 seconds</p>
+  <header class="header">
+    <div class="logo-glow">
+      <img src="logo.png" alt="Albather Jewelry Logo" class="logo">
+    </div>
+    <h1>Albather Jewelry — Live Gold Price Board</h1>
+    <p>Prices in KWD per gram • Auto-refresh every 15 seconds</p>
+  </header>
 
-  <div class="price-grid">
-    <div class="price-box" id="p24">24K — ...</div>
-    <div class="price-box" id="p22">22K — ...</div>
-    <div class="price-box" id="p21">21K — ...</div>
-    <div class="price-box" id="p18">18K — ...</div>
-  </div>
+  <main>
+    <div class="prices">
+      <div id="p24" class="card">24K — ...</div>
+      <div id="p22" class="card">22K — ...</div>
+      <div id="p21" class="card">21K — ...</div>
+      <div id="p18" class="card">18K — ...</div>
+    </div>
 
-  <div class="countdown" id="countdown">Next update in 15s</div>
+    <div id="countdown">Next update in 15s</div>
+  </main>
 
   <footer>
-    Source: metals.dev × exchangerate.host (synced) <br />
-    Updated automatically every 15 seconds.
+    <p>Source: metals.dev × exchangerate.host (synced)<br>
+    Updated automatically every 15 seconds.</p>
   </footer>
 
   <script>
     let countdown = 15;
+    const ids = { "24": "p24", "22": "p22", "21": "p21", "18": "p18" };
     const countdownEl = document.getElementById("countdown");
+
+    function flash(id) {
+      const el = document.getElementById(id);
+      el.classList.add("flash");
+      setTimeout(() => el.classList.remove("flash"), 600);
+    }
 
     async function fetchPrices() {
       try {
-        const res = await fetch("/api/gold");
+        const res = await fetch('/api/gold?_t=' + Date.now());
         const data = await res.json();
-        const prices = data.prices;
-        for (let k of ["24", "22", "21", "18"]) {
-          const el = document.getElementById("p" + k);
-          el.textContent = k + "K — " + prices["k" + k].toFixed(3) + " KWD";
-          el.classList.add("flash");
-          setTimeout(() => el.classList.remove("flash"), 600);
-        }
+        const p = data.prices;
+        ["24", "22", "21", "18"].forEach(k => {
+          const el = document.getElementById(ids[k]);
+          el.textContent = `${k}K — ${Number(p["k" + k]).toFixed(3)} KWD`;
+          flash(ids[k]);
+        });
       } catch (err) {
-        console.error("Error fetching prices:", err);
+        console.error('Error fetching prices:', err);
       }
     }
 
-    function startCountdown() {
-      const interval = setInterval(() => {
-        countdown--;
-        countdownEl.textContent = "Next update in " + countdown + "s";
-        if (countdown === 0) {
-          countdown = 15;
-          fetchPrices();
-        }
-      }, 1000);
-    }
+    setInterval(() => {
+      countdown--;
+      if (countdownEl) countdownEl.textContent = `Next update in ${countdown}s`;
+      if (countdown <= 0) {
+        countdown = 15;
+        fetchPrices();
+      }
+    }, 1000);
 
     fetchPrices();
-    startCountdown();
   </script>
 </body>
 </html>
