@@ -1,6 +1,8 @@
 {
+  "version": 2,
+  "functions": { "api/**/*.js": { "runtime": "nodejs18.x" } },
   "routes": [
-    { "src": "/api/gold", "dest": "/api/gold.js" },
+    { "src": "/api/(.*)", "dest": "/api/$1" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
