@@ -1,99 +1,67 @@
 // /api/gold.js
-// Vercel Edge Function with multi-source FX fallback + safe defaults
-export const config = { runtime: "edge" };
-
-const OZ_TO_GRAM = 31.1034768;
-// A realistic, safe fallback range for USD→KWD
-const VALID_MIN = 0.25, VALID_MAX = 0.40;
-// Last-known-good USD→KWD if all providers fail (keeps site alive)
-const SAFE_USD_KWD = 0.308;
-
-async function fetchJSON(url) {
-  const r = await fetch(url, { headers: { "accept": "application/json" } });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-async function getGoldUsdPerOz() {
-  // metals.live → {0:{gold: <price>}, ...}
-  const data = await fetchJSON("https://api.metals.live/v1/spot");
-  const gold = data?.[0]?.gold;
-  if (typeof gold !== "number" || !isFinite(gold)) {
-    throw new Error("bad gold price");
-  }
-  return gold;
-}
-
-async function getUsdToKwd() {
-  const sources = [
-    {
-      name: "frankfurter.app",
-      fn: async () => {
-        const j = await fetchJSON("https://api.frankfurter.app/latest?from=USD&to=KWD");
-        return j?.rates?.KWD;
-      }
-    },
-    {
-      name: "open.er-api.com",
-      fn: async () => {
-        const j = await fetchJSON("https://open.er-api.com/v6/latest/USD");
-        return j?.rates?.KWD;
-      }
-    },
-    {
-      name: "exchangerate.host",
-      fn: async () => {
-        const j = await fetchJSON("https://api.exchangerate.host/latest?base=USD&symbols=KWD");
-        return j?.rates?.KWD;
-      }
-    }
-  ];
-
-  const errors = [];
-  for (const s of sources) {
-    try {
-      const rate = await s.fn();
-      if (typeof rate === "number" && isFinite(rate) && rate > VALID_MIN && rate < VALID_MAX) {
-        return { rate, source: s.name };
-      }
-      errors.push(`${s.name}: invalid ${rate}`);
-    } catch (e) {
-      errors.push(`${s.name}: ${e.message}`);
-    }
-  }
-  // All failed → use safe constant so UI never breaks
-  return { rate: SAFE_USD_KWD, source: `fallback (${errors.join(" | ")})` };
-}
-
-export default async function handler() {
+export default async function handler(req, res) {
   try {
-    const [goldUsdPerOz, fx] = await Promise.all([getGoldUsdPerOz(), getUsdToKwd()]);
-    const kwdPerGram24 = (goldUsdPerOz * fx.rate) / OZ_TO_GRAM;
-
-    const p24 = kwdPerGram24;
-    const prices = {
-      k24: Number((p24).toFixed(3)),
-      k22: Number((p24 * 22 / 24).toFixed(3)),
-      k21: Number((p24 * 21 / 24).toFixed(3)),
-      k18: Number((p24 * 18 / 24).toFixed(3)),
+    // Helper to fetch JSON
+    const fetchJson = async (url) => {
+      const r = await fetch(url, { headers: { accept: "application/json" } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
     };
 
-    return new Response(JSON.stringify({
+    // 1️⃣  Try to get gold in USD/oz from several sources
+    let usdPerOz;
+    try {
+      const metals = await fetchJson("https://api.metals.live/v1/spot");
+      usdPerOz = metals?.[0]?.gold;
+      if (!usdPerOz) throw new Error("no gold");
+    } catch {
+      try {
+        const alt = await fetchJson("https://data-asg.goldprice.org/dbXRates/USD");
+        usdPerOz = alt?.items?.[0]?.xauPrice;
+      } catch {
+        usdPerOz = 2370; // fallback
+      }
+    }
+
+    // 2️⃣  Get USD→KWD with multi-fallbacks
+    let usdToKwd;
+    const tryFX = async (url, path) => {
+      const j = await fetchJson(url);
+      return path.split(".").reduce((v, k) => v?.[k], j);
+    };
+    const fxUrls = [
+      ["https://api.frankfurter.app/latest?from=USD&to=KWD", "rates.KWD"],
+      ["https://open.er-api.com/v6/latest/USD", "rates.KWD"],
+      ["https://api.exchangerate.host/latest?base=USD&symbols=KWD", "rates.KWD"]
+    ];
+    for (const [u, p] of fxUrls) {
+      try {
+        const rate = await tryFX(u, p);
+        if (typeof rate === "number" && rate > 0.25 && rate < 0.4) {
+          usdToKwd = rate;
+          break;
+        }
+      } catch {}
+    }
+    if (!usdToKwd) usdToKwd = 0.308; // safe constant
+
+    // 3️⃣  Compute KWD per gram
+    const perGram24 = (usdPerOz * usdToKwd) / 31.1034768;
+    const round = (n) => Number(n.toFixed(3));
+    const prices = {
+      k24: round(perGram24),
+      k22: round(perGram24 * 22 / 24),
+      k21: round(perGram24 * 21 / 24),
+      k18: round(perGram24 * 18 / 24)
+    };
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.status(200).json({
       prices,
       updated: new Date().toISOString(),
-      source: `metals.live × ${fx.source}`
-    }), {
-      status: 200,
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        // allow your front-end to cache briefly, but keep it fresh
-        "cache-control": "public, max-age=10, s-maxage=10"
-      }
+      source: "metals.live × frankfurter × fallback"
     });
-  } catch (err) {
-    return new Response(JSON.stringify({
-      error: "fetch failed",
-      detail: err?.message || String(err)
-    }), { status: 500, headers: { "content-type": "application/json" } });
+  } catch (e) {
+    res.status(500).json({ error: "fetch failed", detail: e.message });
   }
 }
